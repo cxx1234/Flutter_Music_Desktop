@@ -254,10 +254,17 @@ class AppDatabase extends _$AppDatabase {
     };
   }
 
+  /// 返回该文件夹（含其下所有子目录）里「可用」歌曲的文件路径。
+  ///
+  /// **边界语义**：只匹配「恰好等于根」或「根后紧跟 `/`」的路径，避免
+  /// `LIKE '$root%'` 前缀匹配误伤「名字以 root 开头」的兄弟文件夹。
   Future<List<String>> getFolderFilePaths(String folderPath) async {
-    final pattern = '$folderPath%';
-    return (select(songs)
-          ..where((t) => t.filePath.like(pattern) & t.isAvailable.equals(1)))
+    final root = p.normalize(folderPath);
+    return (select(songs)..where(
+          (t) =>
+              (t.filePath.equals(root) | t.filePath.like('$root/%')) &
+              t.isAvailable.equals(1),
+        ))
         .map((s) => s.filePath)
         .get();
   }
@@ -279,14 +286,22 @@ class AppDatabase extends _$AppDatabase {
   ///
   /// Runs in a single transaction so the cleanup is atomic with the delete.
   Future<int> deleteFolderSongs(String folderPath) async {
-    final pattern = '$folderPath%';
+    final root = p.normalize(folderPath);
     return transaction(() async {
-      final deleted = await (delete(
-        songs,
-      )..where((t) => t.filePath.like(pattern))).go();
+      final deleted =
+          await (delete(songs)..where(
+                (t) => t.filePath.equals(root) | t.filePath.like('$root/%'),
+              ))
+              .go();
       await cleanupOrphans();
       return deleted;
     });
+  }
+
+  /// 按文件路径物理删除歌曲行（不清理孤儿；调用方自行 [cleanupOrphans]）。
+  Future<int> deleteSongsByPaths(List<String> filePaths) async {
+    if (filePaths.isEmpty) return 0;
+    return (delete(songs)..where((t) => t.filePath.isIn(filePaths))).go();
   }
 
   /// Removes rows in [playlistSongs] / [albums] / [artists] that no longer

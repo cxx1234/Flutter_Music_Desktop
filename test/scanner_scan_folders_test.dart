@@ -127,6 +127,102 @@ void main() {
     );
     expect(r.added, 1);
   });
+
+  test('单文件夹重扫只作用于该根：其它文件夹可用歌不被误标缺失', () async {
+    final dirB = await Directory.systemTemp.createTemp('scan_folders_b_');
+    addTearDown(() async {
+      if (await dirB.exists()) await dirB.delete(recursive: true);
+    });
+
+    final aPath = await addFile('a.mp3');
+    final bPath = '${dirB.path}/b.mp3';
+    await File(bPath).writeAsString('fake');
+
+    // 先全量扫两个根 → 两首都可用。
+    final full = await scanner.scanFolders([
+      dir.path,
+      dirB.path,
+    ], updateExisting: true);
+    expect(full.added, 2);
+
+    // 删除根 A 的文件，再只重扫根 A。
+    await File(aPath).delete();
+    final r = await scanner.scanFolders([dir.path], updateExisting: true);
+    expect(r.markedMissing, 1, reason: '根 A 已删文件应被标缺失');
+
+    final avail = await db.getAvailableSongs();
+    expect(
+      avail.map((s) => s.filePath),
+      contains(bPath),
+      reason: '根 B 的歌不应被单文件夹重扫影响',
+    );
+    expect(avail, hasLength(1));
+  });
+
+  test('force 扫描清理确已消失的 ghost；普通全量只标缺失保留', () async {
+    final p = await addFile('song.mp3');
+    await scanner.scanFolders([dir.path], updateExisting: true);
+
+    // 删除文件后普通全量：只标缺失、保留行（可恢复）。
+    await File(p).delete();
+    final full = await scanner.scanFolders([dir.path], updateExisting: true);
+    expect(full.markedMissing, 1);
+    expect(await db.getUnavailableSongs(), hasLength(1));
+
+    // force：物理清理确已消失的残留行。
+    final forced = await scanner.scanFolders(
+      [dir.path],
+      updateExisting: true,
+      force: true,
+    );
+    expect(forced.purged, 1);
+    expect(await db.getUnavailableSongs(), isEmpty);
+  });
+
+  test('force 扫描不删仍在磁盘的 ghost（并恢复为可用）', () async {
+    final p = await addFile('song.mp3');
+    await scanner.scanFolders([dir.path], updateExisting: true);
+    // 模拟：文件仍在磁盘但曾被误标为不可用（如权限抖动历史）。
+    await db.markAsUnavailable([p]);
+
+    final forced = await scanner.scanFolders(
+      [dir.path],
+      updateExisting: true,
+      force: true,
+    );
+    expect(forced.purged, 0, reason: '文件还在磁盘 → 不删');
+    expect(await db.getUnavailableSongs(), isEmpty);
+    final avail = await db.getAvailableSongs();
+    expect(avail.map((s) => s.filePath), contains(p), reason: '重新解析后恢复可用');
+  });
+
+  test('force 扫描不清理所扫根之外的 ghost（作用域限定）', () async {
+    final dirB = await Directory.systemTemp.createTemp('scan_folders_c_');
+    addTearDown(() async {
+      if (await dirB.exists()) await dirB.delete(recursive: true);
+    });
+
+    final pA = await addFile('a.mp3');
+    final pB = '${dirB.path}/b.mp3';
+    await File(pB).writeAsString('fake');
+
+    await scanner.scanFolders([dir.path, dirB.path], updateExisting: true);
+    // 两个文件都删除并标记缺失。
+    await File(pA).delete();
+    await File(pB).delete();
+    await scanner.scanFolders([dir.path, dirB.path], updateExisting: true);
+    expect(await db.getUnavailableSongs(), hasLength(2));
+
+    // 只 force 扫根 A → 只清根 A 的 ghost。
+    final forced = await scanner.scanFolders(
+      [dir.path],
+      updateExisting: true,
+      force: true,
+    );
+    expect(forced.purged, 1);
+    final remaining = await db.getUnavailableSongs();
+    expect(remaining.single.filePath, pB);
+  });
 }
 
 /// 不可跨 isolate 发送的自定义对象（无异步生命周期，仅作回归哨兵）。

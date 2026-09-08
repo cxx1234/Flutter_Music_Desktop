@@ -175,6 +175,20 @@ class SongRepository {
     return paths.toSet();
   }
 
+  /// 返回这些根目录（含子目录）下所有「可用」歌曲路径的并集。
+  ///
+  /// 供扫描 diff 使用：部分扫描（单文件夹重扫）只应在这几个根内做增删/标记
+  /// 缺失，避免影响其它未扫描的文件夹（不再依赖 File.existsSync 启发式兜底）。
+  Future<Set<String>> getExistingFilePathsUnder(
+    Iterable<String> folderPaths,
+  ) async {
+    final result = <String>{};
+    for (final root in folderPaths) {
+      result.addAll(await _db.getFolderFilePaths(root));
+    }
+    return result;
+  }
+
   /// Returns the set of available file paths under [folderPath].
   Future<Set<String>> getFolderFilePaths(String folderPath) async {
     final paths = await _db.getFolderFilePaths(folderPath);
@@ -556,6 +570,30 @@ class SongRepository {
     return _db.deleteFolderSongs(folderPath);
   }
 
+  /// 物理删除「确已从磁盘消失」的不可用(ghost)行，仅限 [roots] 下、且不在
+  /// [diskFiles]（本次扫描在磁盘上实际看到的文件）。返回删除行数。
+  ///
+  /// 仅 force 扫描调用：普通全量只把缺失标不可用保留可恢复，这里才是真正
+  /// 清理永远回不来的残留行（如转码后删除的原 flac）。删除后由调用方跑
+  /// [cleanupOrphans] 清理被删行引用的 album/artist/playlist。
+  Future<int> purgeUnavailableGone({
+    required List<String> roots,
+    required Set<String> diskFiles,
+  }) async {
+    if (roots.isEmpty) return 0;
+    final songs = await _db.getUnavailableSongs();
+    final toDelete = <String>[];
+    for (final song in songs) {
+      final path = song.filePath;
+      // 只清理本次成功读取的根内的行；文件若还在磁盘（将恢复）则保留。
+      if (!roots.any((root) => _isUnderRoot(path, root))) continue;
+      if (diskFiles.contains(path)) continue;
+      toDelete.add(path);
+    }
+    if (toDelete.isEmpty) return 0;
+    return _db.deleteSongsByPaths(toDelete);
+  }
+
   /// 清理不再被任何歌曲引用的 album / artist / playlist 行(全量扫描后调用)。
   Future<void> cleanupOrphans() => _db.cleanupOrphans();
 
@@ -567,6 +605,17 @@ class SongRepository {
   }
 
   // ─── Helpers ───────────────────────────────────────────
+
+  /// 边界语义的「路径在根下」判断：恰好等于根，或根后紧跟 `/`。
+  ///
+  /// 与 database.dart 里 `getFolderFilePaths`/`deleteFolderSongs` 的 SQL
+  /// （`= root OR LIKE 'root/%'`）保持一致（均先 normalize），避免前缀误匹配
+  /// 兄弟文件夹。
+  bool _isUnderRoot(String path, String root) {
+    final r = p.normalize(root);
+    if (path == r) return true;
+    return path.startsWith('$r/');
+  }
 
   SongsCompanion _toCompanion(
     ScannedSong scanned,

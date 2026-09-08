@@ -77,6 +77,13 @@ class ScanResult {
   final int errors;
   final List<String> errorDetails;
 
+  /// 强制扫描时物理清理的不可用残留(ghost)行数（普通扫描恒为 0）。
+  final int purged;
+
+  /// 本次实际（尝试）解析的文件路径集合。供调用方扫完后让文件夹监听跳过这些
+  /// 文件，避免「刚扫完又立刻被 watcher flush 重复解析」的冗余工作。
+  final Set<String> parsedFiles;
+
   const ScanResult({
     required this.added,
     required this.updated,
@@ -84,13 +91,16 @@ class ScanResult {
     required this.skipped,
     required this.errors,
     required this.errorDetails,
+    this.purged = 0,
+    this.parsedFiles = const <String>{},
   });
 
   int get totalProcessed => added + updated + markedMissing + skipped;
 
   @override
   String toString() =>
-      '添加 $added，更新 $updated，标记缺失 $markedMissing，跳过 $skipped，错误 $errors';
+      '添加 $added，更新 $updated，标记缺失 $markedMissing，清理残留 $purged，'
+      '跳过 $skipped，错误 $errors';
 }
 
 /// Scans music folders for audio files and syncs them with the database.
@@ -161,25 +171,35 @@ class LibraryScannerService {
 
     final errorDetails = <String>[];
     // 多文件夹并行收集（各自独立，Future.wait 叠加磁盘 I/O 等待）。
+    // 同时记录「成功读取的根目录」（无目录级错误）：force 清理 ghost 只在这些
+    // 根内进行，目录不存在/权限失败/外接盘不可达时不误删。
     final collected = await Future.wait([
       for (final folder in folderPaths) _collectAudioFiles(folder),
     ]);
     final diskFiles = <String>{};
-    for (final (files, dirErrors) in collected) {
+    final okRoots = <String>[];
+    for (var i = 0; i < folderPaths.length; i++) {
+      final (files, dirErrors) = collected[i];
       diskFiles.addAll(files);
       errorDetails.addAll(dirErrors);
+      if (dirErrors.isEmpty) okRoots.add(folderPaths[i]);
     }
 
     // ── Phase 2: Diff with database ───────────────────────
-    final dbFiles = await _songRepository.getExistingFilePaths();
+    // 只拿「本次所扫根目录」下的可用路径做 diff：单文件夹重扫不会误标其它
+    // 未扫文件夹（不再依赖 File.existsSync 启发式兜底）。全量扫描传全部根，
+    // scopedDb 即全部可用歌曲，行为与旧逻辑等价。
+    final scopedDb = await _songRepository.getExistingFilePathsUnder(
+      folderPaths,
+    );
     final existingStamps = await _songRepository.getExistingFileStats();
 
-    final newFiles = diskFiles.difference(dbFiles).toList()..sort();
-    final existingFiles = dbFiles.intersection(diskFiles).toList()..sort();
-    final restoredFiles = dbFiles
+    final newFiles = diskFiles.difference(scopedDb).toList()..sort();
+    final existingFiles = scopedDb.intersection(diskFiles).toList()..sort();
+    final restoredFiles = scopedDb
         .where((path) => !diskFiles.contains(path) && File(path).existsSync())
         .toSet();
-    final missingFromDb = dbFiles.difference(diskFiles);
+    final missingFromDb = scopedDb.difference(diskFiles);
     // Remove restored files from the "missing" set
     final trulyMissing = missingFromDb.difference(restoredFiles);
 
@@ -251,10 +271,22 @@ class LibraryScannerService {
     }
 
     // ── Phase 3c: Mark missing files ─────────────────────
+    // 只标记本次所扫根下的缺失（scopedDb），不触碰其它文件夹。
     final markedMissing = <String>[];
     if (markMissing && trulyMissing.isNotEmpty) {
-      await _songRepository.markMissingFiles(dbFiles, diskFiles);
+      await _songRepository.markMissingFiles(scopedDb, diskFiles);
       markedMissing.addAll(trulyMissing);
+    }
+
+    // ── Phase 3c-2: (force) 清理确已消失的不可用残留行 ──
+    // 仅 force 扫描：把「文件已从磁盘消失」的 is_available=0 行物理删除
+    // （普通全量只标缺失、保留可恢复）。限定在成功读取的根内，避免误删。
+    var purgedCount = 0;
+    if (force && updateExisting && okRoots.isNotEmpty) {
+      purgedCount = await _songRepository.purgeUnavailableGone(
+        roots: okRoots,
+        diskFiles: diskFiles,
+      );
     }
 
     // ── Phase 3d: 清理孤儿数据 ──────────────────────────
@@ -287,7 +319,8 @@ class LibraryScannerService {
           'found ${diskFiles.length} audio file(s), '
           'added $addedCount, updated $updatedCount, skipped $skippedCount, '
           'restored ${restoredFiles.length}, missing ${markedMissing.length}, '
-          'errors ${errorDetails.length}, took ${stopwatch.elapsedMilliseconds}ms',
+          'purged $purgedCount, errors ${errorDetails.length}, '
+          'took ${stopwatch.elapsedMilliseconds}ms',
     );
 
     // 批量失败聚合为一条 error 日志,避免逐文件刷屏(单文件失败已在上层
@@ -307,6 +340,8 @@ class LibraryScannerService {
       skipped: skippedCount,
       errors: errorDetails.length,
       errorDetails: errorDetails,
+      purged: purgedCount,
+      parsedFiles: filesToParse.toSet(),
     );
   }
 

@@ -628,6 +628,7 @@ String scanResultText(ScanResult result) {
     if (result.updated > 0) '更新 ${result.updated} 首',
     if (result.added == 0 && result.updated == 0) '无新文件',
     if (result.markedMissing > 0) '${result.markedMissing} 首已移除',
+    if (result.purged > 0) '清理 ${result.purged} 条残留',
     if (result.errors > 0) '${result.errors} 处失败',
   ];
   return parts.join('，');

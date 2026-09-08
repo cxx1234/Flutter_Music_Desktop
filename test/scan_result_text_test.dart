@@ -11,6 +11,7 @@ void main() {
       int markedMissing = 0,
       int skipped = 0,
       int errors = 0,
+      int purged = 0,
     }) {
       return ScanResult(
         added: added,
@@ -19,6 +20,7 @@ void main() {
         skipped: skipped,
         errors: errors,
         errorDetails: const [],
+        purged: purged,
       );
     }
 
@@ -47,6 +49,17 @@ void main() {
 
     test('仅移除（无新增无更新）', () {
       expect(scanResultText(result(markedMissing: 3)), '无新文件，3 首已移除');
+    });
+
+    test('仅清理残留', () {
+      expect(scanResultText(result(purged: 4)), '无新文件，清理 4 条残留');
+    });
+
+    test('移除 + 清理残留并存', () {
+      expect(
+        scanResultText(result(markedMissing: 2, purged: 3)),
+        '无新文件，2 首已移除，清理 3 条残留',
+      );
     });
 
     test('有失败追加失败数', () {
