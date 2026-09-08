@@ -220,7 +220,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                 ),
                 title: _name,
                 info: '${_songs.length} 首歌曲',
-                action: PlayAllButton(onPlayAll: _playAll),
+                action: PlayAllButton(
+                  onPlayAll: _playAll,
+                  enabled: _songs.isNotEmpty,
+                ),
               ),
               if (_loading)
                 const Expanded(

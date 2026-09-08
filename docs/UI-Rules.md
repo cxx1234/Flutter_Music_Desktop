@@ -86,6 +86,7 @@
 - 组件：`lib/widgets/play_all_button.dart` —— 统一的**椭圆形文本按钮**（`FilledButton.icon` + `StadiumBorder`，▶ 播放全部）。
 - 位置：放在**详情块信息文本下方**（封面右侧那一列，文本之下）；详情块（`DetailHeader`）底部用**底边线**（`Border(bottom: outlineVariant)`，`elevation: 0`）分隔列表区（2026-08-25 起弃用 elevation 阴影，见 4.3）。
 - 已用：专辑详情、播放列表详情、我的收藏（爱心占位详情块）、歌手「歌曲」区块标题右侧（同一组件）。
+- 空态禁用：播放列表详情 / 我的收藏在歌曲为空时传 `enabled: false`（`FilledButton` 原生禁用态），专辑/歌手因列表恒非空保持默认启用（2026-09-08）。
 
 ### 4.3 卡片表面（CardSurface）— 弃用 Card elevation 阴影
 
