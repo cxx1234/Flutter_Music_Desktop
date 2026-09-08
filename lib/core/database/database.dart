@@ -404,15 +404,17 @@ class AppDatabase extends _$AppDatabase {
   Future<int> updateAlbum(AlbumsCompanion entry, int id) =>
       (update(albums)..where((t) => t.id.equals(id))).write(entry);
 
+  /// 专辑详情页歌曲。只返回可用歌曲（`is_available=1`），与音乐库/浏览计数
+  /// 一致：已删除文件仅被标记不可用（保留可恢复），不应出现在详情列表里。
   Future<List<Song>> getSongsByAlbum(int albumId) =>
       (select(songs)
-            ..where((t) => t.albumId.equals(albumId))
+            ..where((t) => t.albumId.equals(albumId) & t.isAvailable.equals(1))
             ..orderBy(_songTrackOrdering()))
           .get();
 
   Stream<List<Song>> watchSongsByAlbum(int albumId) =>
       (select(songs)
-            ..where((t) => t.albumId.equals(albumId))
+            ..where((t) => t.albumId.equals(albumId) & t.isAvailable.equals(1))
             ..orderBy(_songTrackOrdering()))
           .watch();
 
@@ -442,9 +444,13 @@ class AppDatabase extends _$AppDatabase {
   Future<int> updateArtist(ArtistsCompanion entry, int id) =>
       (update(artists)..where((t) => t.id.equals(id))).write(entry);
 
+  /// 歌手详情页歌曲。只返回可用歌曲（`is_available=1`），与歌手卡片计数
+  /// （`getArtistStats`）一致：被删除文件的残留行不应计入详情。
   Future<List<Song>> getSongsByArtist(int artistId) =>
       (select(songs)
-            ..where((t) => t.artistId.equals(artistId))
+            ..where(
+              (t) => t.artistId.equals(artistId) & t.isAvailable.equals(1),
+            )
             ..orderBy([
               (t) => OrderingTerm.asc(t.album),
               ..._songTrackOrdering(),
@@ -453,7 +459,9 @@ class AppDatabase extends _$AppDatabase {
 
   Stream<List<Song>> watchSongsByArtist(int artistId) =>
       (select(songs)
-            ..where((t) => t.artistId.equals(artistId))
+            ..where(
+              (t) => t.artistId.equals(artistId) & t.isAvailable.equals(1),
+            )
             ..orderBy([
               (t) => OrderingTerm.asc(t.album),
               ..._songTrackOrdering(),
