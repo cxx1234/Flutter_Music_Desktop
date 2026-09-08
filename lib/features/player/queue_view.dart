@@ -67,12 +67,17 @@ class QueueView extends StatefulWidget {
   /// 跨会话播放器界面状态：滚动位置/当前歌在此读写，重开不重滚。
   final PlayerUiState uiState;
 
+  /// 点「播放列表」按钮新打开队列时为 true：挂载后若当前播放项不在视口内
+  /// （即「定位」按钮可见）则自动定位到当前播放项。
+  final bool locateOnOpen;
+
   const QueueView({
     super.key,
     required this.viewModel,
     required this.theme,
     this.isNarrow = false,
     required this.uiState,
+    this.locateOnOpen = false,
   });
 
   @override
@@ -119,7 +124,16 @@ class _QueueViewState extends State<QueueView> {
     final follow = vm.currentSong?.id != widget.uiState.lastCurrentSongId;
     widget.uiState.lastCurrentSongId = vm.currentSong?.id;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (follow) {
+      if (widget.locateOnOpen) {
+        // 点「播放列表」按钮新打开队列：当前播放项不在视口（等同「定位」按钮
+        // 可见）→ 自动定位到当前项；已在视口内则仅同步边缘淡出。
+        if (_scrollController.hasClients &&
+            !_isCurrentInView(_scrollController.position)) {
+          _scrollToCurrent();
+        } else {
+          _refreshFadeState();
+        }
+      } else if (follow) {
         _scrollToCurrent();
       } else {
         // 恢复位置后按偏移重算边缘淡出（避免遮罩残留）。

@@ -71,6 +71,11 @@ class _PlayerPageState extends State<PlayerPage> {
   // 窄模式当前标签（默认播放器；外置于 uiState，重开保留）。
   NarrowTab get _narrowTab => widget.uiState.narrowTab;
 
+  /// 点「播放列表/播放队列」按钮新打开队列时置 true：QueueView 挂载首帧若
+  /// 当前播放项不在视口（定位按钮可见）则自动定位。页面级一次性意图，重开
+  /// 播放页即复位（不影响重开页面恢复滚动位置的行为）。
+  bool _locateOnQueueOpen = false;
+
   @override
   void initState() {
     super.initState();
@@ -161,9 +166,13 @@ class _PlayerPageState extends State<PlayerPage> {
                   closeWhenSelected: true,
                   onTap: () => setState(() {
                     final cur = widget.uiState.narrowTab;
-                    widget.uiState.narrowTab = cur == NarrowTab.queue
-                        ? NarrowTab.player
-                        : NarrowTab.queue;
+                    if (cur == NarrowTab.queue) {
+                      widget.uiState.narrowTab = NarrowTab.player;
+                    } else {
+                      // 从播放器/歌词切到队列：让队列打开后若当前项不在视口则自动定位。
+                      _locateOnQueueOpen = true;
+                      widget.uiState.narrowTab = NarrowTab.queue;
+                    }
                   }),
                 ),
               ] else ...[
@@ -179,7 +188,13 @@ class _PlayerPageState extends State<PlayerPage> {
                   label: '播放列表',
                   iconSize: 24,
                   selected: _showQueue,
-                  onTap: () => setState(() => widget.uiState.showQueue = true),
+                  onTap: () => setState(() {
+                    if (!widget.uiState.showQueue) {
+                      // 从歌词切到队列：让队列打开后若当前项不在视口则自动定位。
+                      _locateOnQueueOpen = true;
+                    }
+                    widget.uiState.showQueue = true;
+                  }),
                 ),
               ],
               const SizedBox(width: 8),
@@ -263,6 +278,7 @@ class _PlayerPageState extends State<PlayerPage> {
                       theme: theme,
                       showQueue: _showQueue,
                       uiState: widget.uiState,
+                      locateOnOpen: _locateOnQueueOpen,
                       lyricsController: _lyrics.controller,
                       hasTranslation: _lyrics.hasTranslationNotifier,
                       onToggleTranslation: _toggleTranslation,
@@ -404,6 +420,7 @@ class _PlayerPageState extends State<PlayerPage> {
             theme: theme,
             tab: _narrowTab,
             uiState: widget.uiState,
+            locateOnOpen: _locateOnQueueOpen,
             lyricsController: _lyrics.controller,
             hasTranslation: _lyrics.hasTranslationNotifier,
             onToggleTranslation: _toggleTranslation,
@@ -537,6 +554,9 @@ class _NarrowLyricsQueue extends StatefulWidget {
   /// 跨会话播放器界面状态（转交给 QueueView 恢复滚动）。
   final PlayerUiState uiState;
 
+  /// 点「播放列表」按钮打开队列时置 true（转交 QueueView 首帧定位）。
+  final bool locateOnOpen;
+
   /// 歌词控制器（页面级共享，宽/窄两处同一实例）。
   final LyricController lyricsController;
 
@@ -558,6 +578,7 @@ class _NarrowLyricsQueue extends StatefulWidget {
     this.hasTranslation,
     this.onToggleTranslation,
     this.onTextSizeChanged,
+    this.locateOnOpen = false,
   });
 
   @override
@@ -598,6 +619,7 @@ class _NarrowLyricsQueueState extends State<_NarrowLyricsQueue> {
                 theme: widget.theme,
                 isNarrow: true,
                 uiState: widget.uiState,
+                locateOnOpen: widget.locateOnOpen,
               ),
             )
           : KeyedSubtree(
@@ -651,6 +673,9 @@ class _RightPanel extends StatefulWidget {
   /// 跨会话播放器界面状态（转交给 QueueView 恢复滚动）。
   final PlayerUiState uiState;
 
+  /// 点「播放列表」按钮打开队列时置 true（转交 QueueView 首帧定位）。
+  final bool locateOnOpen;
+
   /// 歌词控制器（页面级共享，宽/窄两处同一实例）。
   final LyricController lyricsController;
 
@@ -672,6 +697,7 @@ class _RightPanel extends StatefulWidget {
     this.hasTranslation,
     this.onToggleTranslation,
     this.onTextSizeChanged,
+    this.locateOnOpen = false,
   });
 
   @override
@@ -713,6 +739,7 @@ class _RightPanelState extends State<_RightPanel> {
                       viewModel: widget.viewModel,
                       theme: widget.theme,
                       uiState: widget.uiState,
+                      locateOnOpen: widget.locateOnOpen,
                     ),
                   )
                 : KeyedSubtree(
