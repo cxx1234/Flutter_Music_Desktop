@@ -188,5 +188,37 @@ void main() {
       expect(r.translationLyric, isNot(contains('Hello')));
       expect(r.translationLyric, isNot(contains('[ti:Demo]')));
     });
+
+    test('一行多时间戳 [a][b] 原文 翻译 → 主/翻译都保留全部时间戳', () {
+      const lrc = '[00:00.00][00:05.00]Hello world 你好世界';
+      final r = splitBilingualLrc(lrc);
+      expect(r.mainLyric, contains('[00:00.00][00:05.00]Hello world'));
+      expect(r.translationLyric, contains('[00:00.00][00:05.00]你好世界'));
+      // 不丢失任何一个时间戳。
+      expect(r.mainLyric, contains('[00:05.00]Hello world'));
+      expect(r.translationLyric, contains('[00:05.00]你好世界'));
+    });
+
+    test('两段式按时间戳值对齐：主/翻译毫秒位数不一致也能识别', () {
+      // 主歌词段用 1 位毫秒、翻译段用 2 位毫秒：字符串不同但归一毫秒相同。
+      const lrc = '''
+[ti:Demo]
+[ar:Artist]
+[00:00.0]Hello world
+[00:02.0]Goodbye world
+[00:04.0]Again
+[ti:Demo]
+[ar:Artist]
+[00:00.00]你好世界 你好世界
+[00:02.00]再见世界 再见世界
+[00:04.00]再来一次 再来一次
+''';
+      final r = splitBilingualLrc(lrc);
+      expect(r.mainLyric, contains('[00:00.0]Hello world'));
+      expect(r.mainLyric, isNot(contains('你好')));
+      expect(r.translationLyric, contains('[00:00.00]你好世界 你好世界'));
+      expect(r.translationLyric, contains('[00:04.00]再来一次 再来一次'));
+      expect(r.translationLyric, isNot(contains('Hello')));
+    });
   });
 }

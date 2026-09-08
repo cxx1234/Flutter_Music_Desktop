@@ -40,11 +40,36 @@ final RegExp _blankThenHanzi = RegExp(
   r'[\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000][\u4e00-\u9fff]{2,}',
 );
 
-/// 行首时间戳/标签：`[00:13.45]` 或 `[ti:Even if..]`。
-final RegExp _lineHeader = RegExp(r'^\[([^\[\]]*)\]\s*(.*)$');
+/// 单个时间戳内容：`00:13.45`（分:秒，小数部分为秒、点/冒号均可，1-6 位）。
+final RegExp _timeTag = RegExp(r'^(\d{1,}):(\d{1,2})(?:[.:](\d{1,6}))?$');
 
-/// 时间戳判定：`[数字:...]`（标签首字符是非数字，如 t/o/a）。
-final RegExp _timestampTag = RegExp(r'^\d');
+/// 行首连续时间戳块 + 剩余内容：`[00:00.00][00:05.00]xxx` → 块 + xxx。
+/// 首字符为数字，天然排除 `[ti:...]` 等标签行。
+final RegExp _timeTagsHead = RegExp(
+  r'^((?:\[\d{1,}:\d{1,2}(?:[.:]\d{1,6})?\])+)\s*(.*)$',
+);
+
+/// 从时间戳块中取第一个时间戳内容（去括号），供归一化。
+final RegExp _timeTagInBlock = RegExp(r'\[(\d{1,}:\d{1,2}(?:[.:]\d{1,6})?)\]');
+
+/// 单个时间戳 `mm:ss(.|:)frac` 归一成毫秒；失败返回 null。
+///
+/// 小数部分按「秒的小数位」处理（与 flutter_lyric 一致）：不足 3 位右补 0、
+/// 超过 3 位截断——`[00:17.65]`→17650ms、`[00:00:58]`→580ms；`[00:09.5]`
+/// 与 `[00:09.50]` 归一同值，便于两段式按时间戳值而非字符串对齐。
+int? _timeTagToMs(String tag) {
+  final m = _timeTag.firstMatch(tag);
+  if (m == null) return null;
+  final minutes = int.tryParse(m.group(1)!);
+  final seconds = int.tryParse(m.group(2)!);
+  if (minutes == null || seconds == null) return null;
+  var ms = 0;
+  final frac = m.group(3);
+  if (frac != null && frac.isNotEmpty) {
+    ms = int.tryParse(frac.padRight(3, '0').substring(0, 3)) ?? 0;
+  }
+  return minutes * 60000 + seconds * 1000 + ms;
+}
 
 /// 单行内容（去掉 `[时间戳]` 后的文本）拆成「原文 + 翻译」。
 ///
@@ -90,23 +115,26 @@ final RegExp _timestampTag = RegExp(r'^\d');
   return (main: content.trimRight(), translation: '');
 }
 
-/// 解析后的一行：原始文本（trim 后）+ 时间戳标签 + 内容 + 是否时间戳行。
+/// 解析后的一行。
 typedef _LrcEntry = ({
-  String raw,
-  String tag,
-  String content,
-  bool isTimestamp,
+  String raw, // 整行（trim 后，原样保留）
+  String timeTags, // 行首时间戳块（可多个），非时间戳行 = ''
+  String content, // 去掉时间戳块后的纯文本
+  int? timeMs, // 首个时间戳归一毫秒（两段式识别用）
+  bool isTimestamp, // 是否时间戳行（否则按标签/普通行处理）
 });
 
 /// 整首双语 .lrc 拆成「主歌词文本 + 翻译文本」两条时间轴。
 ///
 /// 优先识别「两段式 LRC」（QQ 音乐等来源）：前半段原文、后半段翻译各带
-/// 一条完整时间轴（翻译段从同一首个时间戳重新开始）。命中时按段整体分配，
-/// **不再做单行拆分**（否则中文翻译行会被再次拆开而撕裂）。
+/// 一条完整时间轴（翻译段从同一首个时间戳重新开始，按归一毫秒比较）。
+/// 命中时按段整体分配，**不再做单行拆分**（否则中文翻译行会被再次拆开而撕裂）。
 ///
 /// 非两段式时走单行拆分：
-/// - 标签行（[ti:]/[ar:] 等）保留在主歌词；
+/// - 标签行（[ti:]/[ar:] 等）/普通行保留在主歌词；
 /// - 每行 `[mm:ss]原文 翻译` → 主歌词 `[mm:ss]原文` + 翻译 `[mm:ss]翻译`；
+/// - 一行多个时间戳 `[a][b]原文 翻译` → 主/翻译都保留全部时间戳前缀
+///   （flutter_lyric 会展开到每个时间戳）；
 /// - 无翻译的行只进主歌词。
 ({String mainLyric, String translationLyric}) splitBilingualLrc(String lrc) {
   final entries = <_LrcEntry>[];
@@ -114,23 +142,30 @@ typedef _LrcEntry = ({
     final line = rawLine.trim();
     if (line.isEmpty) continue;
 
-    final header = _lineHeader.firstMatch(line);
-    if (header == null) {
-      // 非时间戳/标签行。
-      entries.add((raw: line, tag: '', content: '', isTimestamp: false));
+    final head = _timeTagsHead.firstMatch(line);
+    if (head == null) {
+      // 标签行（[ti:]/[ar:] 等）与普通文本行：原样保留（两段式后半会被跳过）。
+      entries.add((
+        raw: line,
+        timeTags: '',
+        content: '',
+        timeMs: null,
+        isTimestamp: false,
+      ));
       continue;
     }
-    final tag = header.group(1)!;
-    final content = header.group(2)!;
+    final timeTags = head.group(1)!;
+    final firstRaw = _timeTagInBlock.firstMatch(timeTags)?.group(1);
     entries.add((
       raw: line,
-      tag: tag,
-      content: content,
-      isTimestamp: _timestampTag.hasMatch(tag),
+      timeTags: timeTags,
+      content: head.group(2)!,
+      timeMs: firstRaw == null ? null : _timeTagToMs(firstRaw),
+      isTimestamp: true,
     ));
   }
 
-  // 两段式：翻译段从「首个时间戳」重新开始（该时间戳在文件后部第二次出现）。
+  // 两段式：翻译段从「首个时间戳」重新开始（按归一毫秒在文件后部再次出现）。
   final twoPass = _trySplitTwoPass(entries);
   if (twoPass != null) return twoPass;
 
@@ -144,9 +179,9 @@ typedef _LrcEntry = ({
       continue;
     }
     final split = splitBilingualLine(e.content);
-    main.writeln('[${e.tag}]${split.main}');
+    main.writeln('${e.timeTags}${split.main}');
     if (split.translation.isNotEmpty) {
-      trans.writeln('[${e.tag}]${split.translation}');
+      trans.writeln('${e.timeTags}${split.translation}');
     }
   }
   return (mainLyric: main.toString(), translationLyric: trans.toString());
@@ -154,22 +189,25 @@ typedef _LrcEntry = ({
 
 /// 尝试识别「两段式 LRC」并拆分；不是两段式返回 null。
 ///
-/// 两段式特征：文件后部再次出现「首个时间戳」（翻译段从同一起点重新
-/// 开始）。命中时 [0, splitAt) 为主歌词、[splitAt, end) 为翻译时间轴。
+/// 两段式特征：文件后部再次出现「首个时间戳」（翻译段从同一起点重新开始，
+/// 按归一毫秒比较，兼容主/翻译两段毫秒位数不一致）。命中时 [0, splitAt) 为
+/// 主歌词、[splitAt, end) 为翻译时间轴。
 ({String mainLyric, String translationLyric})? _trySplitTwoPass(
   List<_LrcEntry> entries,
 ) {
-  String? firstTag;
+  int? firstMs;
   var foundFirst = false;
   for (var i = 0; i < entries.length; i++) {
     final e = entries[i];
     if (!e.isTimestamp) continue;
+    final ms = e.timeMs;
+    if (ms == null) continue;
     if (!foundFirst) {
-      firstTag = e.tag;
+      firstMs = ms;
       foundFirst = true;
       continue;
     }
-    if (e.tag == firstTag) {
+    if (ms == firstMs) {
       // 翻译段至少要有几行时间戳，防「单行重复」噪声误判。
       final transCount = entries.skip(i).where((x) => x.isTimestamp).length;
       if (transCount >= 3) {
