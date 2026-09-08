@@ -111,6 +111,10 @@ class SongRepository {
   Future<void> moveSongInPlaylist(int playlistId, int oldIndex, int newIndex) =>
       _db.moveSongInPlaylist(playlistId, oldIndex, newIndex);
 
+  /// 按给定歌曲顺序重排播放列表（如「按名称排序」一键整理）。
+  Future<void> reorderSongsInPlaylist(int playlistId, List<int> songIds) =>
+      _db.reorderSongsInPlaylist(playlistId, songIds);
+
   Future<List<Song>> getFavoriteSongs() => _db.getFavoriteSongs();
 
   Future<int> getFavoriteCount() => _db.getFavoriteCount();

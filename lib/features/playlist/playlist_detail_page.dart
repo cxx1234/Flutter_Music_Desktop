@@ -52,6 +52,30 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     }
   }
 
+  /// 按名称排序（复用 title_sort_key 拼音键，升序）整理列表：
+  /// 重写 position 后重载，排序可随时切回手动拖拽调整。
+  Future<void> _sortByName() async {
+    if (_songs.length < 2) return;
+    // 稳定排序：主键 titleSortKey（拼音，缺失排末尾），相同再按原标题兜底。
+    final ordered = [..._songs]
+      ..sort((a, b) {
+        final ka = a.titleSortKey;
+        final kb = b.titleSortKey;
+        if (ka == null && kb == null) return a.title.compareTo(b.title);
+        if (ka == null) return 1;
+        if (kb == null) return -1;
+        final c = ka.compareTo(kb);
+        return c != 0 ? c : a.title.compareTo(b.title);
+      });
+    await ServiceLocator.songRepo.reorderSongsInPlaylist(widget.playlist.id, [
+      for (final s in ordered) s.id,
+    ]);
+    if (!mounted) return;
+    // 名称排序后退出手动排序模式，列表按新顺序呈现。
+    if (_reorderMode) setState(() => _reorderMode = false);
+    await _load();
+  }
+
   Future<void> _addSongs() async {
     final added = await showAddSongsSheet(context, widget.playlist.id);
     if (added != null && added > 0) {
@@ -196,9 +220,11 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               if (value == 'rename') _rename();
               if (value == 'delete') _delete();
               if (value == 'export') _exportM3u();
+              if (value == 'sortByName') _sortByName();
             },
             itemBuilder: (context) => const [
               PopupMenuItem(value: 'export', child: Text('导出为 M3U…')),
+              PopupMenuItem(value: 'sortByName', child: Text('按名称排序')),
               PopupMenuItem(value: 'rename', child: Text('重命名')),
               PopupMenuItem(value: 'delete', child: Text('删除')),
             ],

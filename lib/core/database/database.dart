@@ -593,6 +593,36 @@ class AppDatabase extends _$AppDatabase {
     });
   }
 
+  /// 按 [songIds] 顺序重排播放列表歌曲的 position（一键整理，如「按名称排序」）。
+  ///
+  /// 仅调整现有行；不在 [songIds] 中的行（如已失效/不可用歌曲）保持原相对
+  /// 顺序追加到末尾，避免遗漏。整表在事务内批量更新。
+  Future<void> reorderSongsInPlaylist(int playlistId, List<int> songIds) {
+    return transaction(() async {
+      final rows =
+          await (select(playlistSongs)
+                ..where((t) => t.playlistId.equals(playlistId))
+                ..orderBy([(t) => OrderingTerm.asc(t.position)]))
+              .get();
+      if (rows.isEmpty || songIds.isEmpty) return;
+      final order = <int, int>{};
+      for (var i = 0; i < songIds.length; i++) {
+        order[songIds[i]] = i;
+      }
+      rows.sort((a, b) {
+        final ai = order[a.songId];
+        final bi = order[b.songId];
+        if (ai == null && bi == null) {
+          return a.position.compareTo(b.position);
+        }
+        if (ai == null) return 1;
+        if (bi == null) return -1;
+        return ai.compareTo(bi);
+      });
+      await _writePositions(rows);
+    });
+  }
+
   /// 我的收藏：isFavorite=1 的可用歌曲（按标题排序键）。
   Future<List<Song>> getFavoriteSongs() =>
       (select(songs)

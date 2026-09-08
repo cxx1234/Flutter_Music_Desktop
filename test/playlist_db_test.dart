@@ -91,4 +91,40 @@ void main() {
     await db.deletePlaylist(pid);
     expect(await db.getAllPlaylists(), isEmpty);
   });
+
+  test('reorderSongsInPlaylist 按给定顺序重排，未列出的行保持相对序追加末尾', () async {
+    final s1 = await insertSong('A');
+    final s2 = await insertSong('B');
+    final s3 = await insertSong('C');
+    final s4 = await insertSong('D');
+    final pid = await insertPlaylist('排序测试');
+
+    for (final s in [s1, s2, s3, s4]) {
+      await db.addSongToPlaylist(pid, s.id);
+    }
+    expect((await db.getSongsInPlaylist(pid)).map((s) => s.id).toList(), [
+      s1.id,
+      s2.id,
+      s3.id,
+      s4.id,
+    ]);
+
+    // 按目标顺序整体重排
+    await db.reorderSongsInPlaylist(pid, [s4.id, s2.id, s1.id, s3.id]);
+    expect((await db.getSongsInPlaylist(pid)).map((s) => s.id).toList(), [
+      s4.id,
+      s2.id,
+      s1.id,
+      s3.id,
+    ]);
+
+    // 未列出的行（模拟过滤掉的不可用歌曲）保持原相对顺序追加到末尾
+    await db.reorderSongsInPlaylist(pid, [s3.id, s1.id, s4.id]);
+    expect((await db.getSongsInPlaylist(pid)).map((s) => s.id).toList(), [
+      s3.id,
+      s1.id,
+      s4.id,
+      s2.id,
+    ]);
+  });
 }
