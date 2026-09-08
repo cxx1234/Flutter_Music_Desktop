@@ -78,7 +78,7 @@ class _ShellPageState extends State<ShellPage> {
       case NavigationItem.playlists:
         return PlaylistPage(active: active, controller: widget.controller);
       case NavigationItem.settings:
-        return const SettingsPage();
+        return SettingsPage(controller: widget.controller);
     }
   }
 

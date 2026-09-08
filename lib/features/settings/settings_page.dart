@@ -4,12 +4,16 @@ import '../../core/models/accent_color.dart';
 import '../../core/services/album_art_cache_service.dart';
 import '../../core/services/service_locator.dart';
 import '../../widgets/page_toolbar.dart';
+import '../shell/shell_controller.dart';
 import 'about_page.dart';
 import 'log_page.dart';
 
-/// 设置页：分组卡片（播放设置 / 外观 / 通用）。
+/// 设置页：分组卡片（音乐库 / 播放设置 / 外观 / 通用）。
 class SettingsPage extends StatefulWidget {
-  const SettingsPage({super.key});
+  /// Shell 控制器（「音乐库 › 强制刷新」动作由此切到音乐库并触发）。
+  final ShellController? controller;
+
+  const SettingsPage({super.key, this.controller});
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -162,6 +166,47 @@ class _SettingsPageState extends State<SettingsPage> {
           1,
         ),
         child: Switch(value: value, onChanged: onChanged),
+      ),
+    );
+  }
+
+  /// 音乐库 › 强制刷新：切回音乐库 tab 并触发全量重解析（与旧长按/右键一致）。
+  ///
+  /// 无文件夹时按钮已置灰（onTap:null），此处只负责跳转并触发。
+  void _forceRescan() {
+    final controller = widget.controller;
+    if (controller == null || !mounted) return;
+    controller.request(NavigationItem.library, action: ShellAction.forceRescan);
+  }
+
+  /// 「音乐库」分组卡片：目前为强制刷新入口。无文件夹时禁用（ListTile 置灰）。
+  Widget _buildLibraryCard() {
+    final theme = Theme.of(context);
+    final hasFolders =
+        ServiceLocator.isReady &&
+        ServiceLocator.settings.musicFolders.isNotEmpty;
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 24),
+      elevation: 0,
+      color: Colors.transparent,
+      surfaceTintColor: Colors.transparent,
+      shadowColor: Colors.transparent,
+      clipBehavior: Clip.antiAlias,
+      child: ListTile(
+        minVerticalPadding: 16,
+        enabled: hasFolders,
+        leading: const Icon(Icons.refresh),
+        title: _buildOptionText(
+          theme,
+          '强制刷新',
+          hasFolders ? '重新解析全部歌曲，修复异常元数据/封面' : '请先在音乐库添加文件夹',
+        ),
+        subtitle: null,
+        trailing: Icon(
+          Icons.chevron_right,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+        onTap: hasFolders ? _forceRescan : null,
       ),
     );
   }
@@ -519,6 +564,8 @@ class _SettingsPageState extends State<SettingsPage> {
             child: ListView(
               padding: const EdgeInsets.only(bottom: 24),
               children: [
+                _buildSectionHeader('音乐库'),
+                _buildLibraryCard(),
                 _buildSectionHeader('播放设置'),
                 _buildPlaybackCard(),
                 _buildSectionHeader('外观'),

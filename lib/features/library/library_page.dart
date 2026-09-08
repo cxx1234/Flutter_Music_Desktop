@@ -57,10 +57,12 @@ class _LibraryPageState extends State<LibraryPage> {
     _actionSub = widget.controller?.actions.listen(_onShellAction);
   }
 
-  /// macOS 菜单「导入文件夹」动作：直接弹文件夹选择器。
+  /// Shell 动作：导入文件夹 / 强制刷新（设置页触发后切回本页执行）。
   void _onShellAction(ShellAction action) {
     if (action == ShellAction.importFolder) {
       _pickFolder();
+    } else if (action == ShellAction.forceRescan) {
+      _viewModel.forceScan();
     }
   }
 
@@ -411,15 +413,10 @@ class _LibraryPageState extends State<LibraryPage> {
           ),
         if (_musicFolders.isNotEmpty) ...[
           if (!_viewModel.isScanning)
-            GestureDetector(
-              // 桌面右键：直接强制刷新（忽略 mtime/大小变化检测，全量重解析）。
-              onSecondaryTapDown: (_) => _viewModel.forceScan(),
-              child: IconButton(
-                onPressed: _viewModel.startScan,
-                onLongPress: _viewModel.forceScan,
-                icon: const Icon(Icons.refresh),
-                tooltip: '重新扫描（右键/长按强制刷新）',
-              ),
+            IconButton(
+              onPressed: _viewModel.startScan,
+              icon: const Icon(Icons.refresh),
+              tooltip: '重新扫描',
             ),
           const SizedBox(width: 8),
           FilledButton.icon(
@@ -533,9 +530,9 @@ class _LibraryPageState extends State<LibraryPage> {
           itemCount: _musicFolders.length,
           itemBuilder: (context, index) {
             final folder = _musicFolders[index];
-            // 每个卡片底部留 8pt 间距，避免多个卡片叠在一起。
+            // 每个卡片顶部留 8pt 间距，避免多个卡片叠在一起。
             return Padding(
-              padding: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.only(top: 8),
               child: CardSurface(
                 child: ListTile(
                   dense: true,

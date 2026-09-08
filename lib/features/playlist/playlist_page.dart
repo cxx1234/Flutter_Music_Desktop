@@ -92,6 +92,8 @@ class _PlaylistPageState extends State<PlaylistPage> {
         _exportPlaylistFromMenu();
       case ShellAction.importFolder:
         break; // 文件夹动作属于音乐库页。
+      case ShellAction.forceRescan:
+        break; // 强制刷新属于音乐库页。
     }
   }
 

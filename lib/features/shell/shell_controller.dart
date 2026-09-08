@@ -29,6 +29,9 @@ enum ShellAction {
 
   /// 导出播放列表（M3U）：切到播放列表页并选一个列表导出。
   exportPlaylist,
+
+  /// 强制刷新音乐库（全量重解析，忽略变化检测）：切到音乐库页并触发。
+  forceRescan,
 }
 
 /// 允许外部（App/菜单/播放页）切换 Shell tab 并触发页面动作的控制器。
