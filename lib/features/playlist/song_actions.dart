@@ -18,7 +18,7 @@ List<PopupMenuEntry<String>> songMenuItems(Song song) {
       PopupMenuItem(
         value: 'playNext',
         enabled: !inQueue,
-        child: const Text('播放下一首'),
+        child: const Text('下一首播放'),
       ),
     PopupMenuItem(
       value: 'addQueue',
@@ -39,13 +39,7 @@ List<PopupMenuEntry<String>> songMenuItems(Song song) {
 /// 对它毫无意义（总是置灰）→ 仅保留「添加到播放列表」与「喜欢」。
 /// 此菜单与通用 [songMenuItems] 分开，避免队列操作出现在正在播放的信息卡上。
 List<PopupMenuEntry<String>> currentSongMenuItems(Song song) {
-  return [
-    const PopupMenuItem(value: 'playlist', child: Text('添加到播放列表')),
-    PopupMenuItem(
-      value: 'favorite',
-      child: Text(song.isFavorite == 1 ? '取消喜欢' : '喜欢'),
-    ),
-  ];
+  return [const PopupMenuItem(value: 'playlist', child: Text('添加到播放列表'))];
 }
 
 /// 处理歌曲"更多"菜单点击。
