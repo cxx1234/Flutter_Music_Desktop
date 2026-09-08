@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 import 'package:watcher/watcher.dart';
 
 import '../constants/audio_extensions.dart';
@@ -7,31 +9,63 @@ import '../utils/logger.dart';
 import 'metadata_service.dart';
 import 'song_repository.dart';
 
-/// Describes a file system event relevant to the music library.
+/// 待处理事件的最新类型：add/modify 归并为 upsert（入库置可用），remove 独立。
+enum _PendingKind { upsert, remove }
+
+/// 描述一次去抖批量处理后的文件系统变化（每窗口只发一条汇总事件）。
 class FolderWatcherEvent {
-  final String filePath;
-  final String folderPath;
-  final String description;
+  /// 本次新增/更新的文件数。
+  final int addedOrUpdated;
+
+  /// 本次移除（标记缺失）的文件数。
+  final int removed;
 
   const FolderWatcherEvent({
-    required this.filePath,
-    required this.folderPath,
-    required this.description,
+    required this.addedOrUpdated,
+    required this.removed,
   });
+
+  String get description {
+    final parts = <String>[
+      if (addedOrUpdated > 0) '添加/更新 $addedOrUpdated',
+      if (removed > 0) '移除 $removed',
+    ];
+    return parts.isEmpty ? '无变化' : parts.join('，');
+  }
 }
 
 /// Watches configured music folders for file changes in real time.
 ///
 /// Uses the `watcher` package (`dart:io`-based file system watcher).
-/// For each folder, a [DirectoryWatcher] monitors add / remove / modify events.
+/// File events are **debounced and batched**: rapid add/modify/remove events
+/// accumulate for ~500ms, then flush as one batch — a single [parseAll] + one
+/// upsert transaction for adds/mods, one [markMissingFiles] for removes — and
+/// a single [FolderWatcherEvent] is emitted. During a scan ([suspend]) events
+/// are buffered and processed after [resumeAfterScan], skipping files the scan
+/// already parsed (avoid duplicate parse right after a scan).
 class FolderWatcherService {
-  final _metadataService = MetadataService();
-  final _songRepository = SongRepository();
+  final MetadataService _metadataService;
+  final SongRepository _songRepository;
 
   final Map<String, StreamSubscription<WatchEvent>> _subscriptions = {};
   final _controller = StreamController<FolderWatcherEvent>.broadcast();
 
-  /// Stream of file-system events detected by watchers.
+  /// 待处理事件：路径 → 最新类型。
+  final Map<String, _PendingKind> _pending = {};
+  Timer? _flushTimer;
+  bool _suspended = false;
+  bool _flushing = false;
+  bool _disposed = false;
+  static const _flushDelay = Duration(milliseconds: 500);
+
+  /// [metadataService]/[songRepository] 可选注入，便于测试；默认走全局。
+  FolderWatcherService({
+    MetadataService? metadataService,
+    SongRepository? songRepository,
+  }) : _metadataService = metadataService ?? MetadataService(),
+       _songRepository = songRepository ?? SongRepository();
+
+  /// Stream of file-system events (one summary per flush).
   Stream<FolderWatcherEvent> get events => _controller.stream;
 
   /// Whether any folder is currently being watched.
@@ -39,6 +73,9 @@ class FolderWatcherService {
 
   /// Returns the list of currently watched folder paths.
   List<String> get watchedFolders => _subscriptions.keys.toList();
+
+  /// 是否有待处理（尚未落库）的文件事件。
+  bool get hasPending => _pending.isNotEmpty;
 
   /// Starts watching a single [folderPath].
   ///
@@ -78,93 +115,137 @@ class FolderWatcherService {
 
   /// Disposes the service, stopping all watchers and closing the stream.
   void dispose() {
+    _disposed = true;
+    _flushTimer?.cancel();
+    _flushTimer = null;
     stopAll();
     _controller.close();
   }
 
-  // ─── Event handler ────────────────────────────────────
+  // ─── Event batching ───────────────────────────────────
 
   void _handleEvent(WatchEvent event, String folderPath) {
-    if (!isSupportedAudioExtension(event.path)) return;
+    _record(event.path, event.type);
+  }
 
-    switch (event.type) {
+  /// 记录一条文件系统事件（去抖后批量处理）。供 watcher 回调与测试复用。
+  @visibleForTesting
+  void recordEvent(String filePath, ChangeType type) {
+    _record(filePath, type);
+  }
+
+  void _record(String filePath, ChangeType type) {
+    if (!isSupportedAudioExtension(filePath)) return;
+    switch (type) {
       case ChangeType.ADD:
-        _onFileAdded(event.path, folderPath);
-      case ChangeType.REMOVE:
-        _onFileRemoved(event.path, folderPath);
       case ChangeType.MODIFY:
-        _onFileModified(event.path, folderPath);
+        _pending[filePath] = _PendingKind.upsert;
+      case ChangeType.REMOVE:
+        _pending[filePath] = _PendingKind.remove;
     }
+    _scheduleFlush();
   }
 
-  void _onFileAdded(String filePath, String folderPath) {
-    _metadataService
-        .parse(filePath)
-        .then((scanned) async {
-          await _songRepository.insertOrUpdateFromScan([scanned]);
-          _controller.add(
-            FolderWatcherEvent(
-              filePath: filePath,
-              folderPath: folderPath,
-              description: '新歌曲已添加',
-            ),
-          );
-        })
-        .catchError((e, s) {
-          AppLogger.warning(
-            'FolderWatch',
-            'Failed to parse added file: $filePath',
-            e,
-            s,
-          );
-        });
+  void _scheduleFlush() {
+    if (_disposed || _suspended) return;
+    _flushTimer ??= Timer(_flushDelay, () {
+      _flushTimer = null;
+      unawaited(_flushPending());
+    });
   }
 
-  void _onFileRemoved(String filePath, String folderPath) {
-    _songRepository
-        .getSongByFilePath(filePath)
-        .then((song) async {
-          if (song != null) {
-            await _songRepository.markMissingFiles({filePath}, {});
-            _controller.add(
-              FolderWatcherEvent(
-                filePath: filePath,
-                folderPath: folderPath,
-                description: '歌曲文件已移除',
-              ),
-            );
-          }
-        })
-        .catchError((e, s) {
-          AppLogger.warning(
-            'FolderWatch',
-            'Failed to handle removed file: $filePath',
-            e,
-            s,
-          );
-        });
+  /// 暂停（扫描期间）：事件继续缓冲但不再落库；[resumeAfterScan] 后统一处理。
+  void suspend() {
+    _suspended = true;
+    _flushTimer?.cancel();
+    _flushTimer = null;
   }
 
-  void _onFileModified(String filePath, String folderPath) {
-    _metadataService
-        .parse(filePath)
-        .then((scanned) async {
-          await _songRepository.insertOrUpdateFromScan([scanned]);
-          _controller.add(
-            FolderWatcherEvent(
-              filePath: filePath,
-              folderPath: folderPath,
-              description: '歌曲信息已更新',
-            ),
-          );
-        })
-        .catchError((e, s) {
+  /// 恢复监听（不跳过任何文件）。
+  void resume() => _resume(skipUpserts: const {});
+
+  /// 扫描完成后恢复：丢弃/跳过本次扫描已解析过文件的 upsert（与本次扫描集
+  /// 求差），避免刚扫完立刻又被 watcher flush 重复解析；remove 不跳过。
+  void resumeAfterScan(Set<String> scannedPaths) =>
+      _resume(skipUpserts: scannedPaths);
+
+  void _resume({required Set<String> skipUpserts}) {
+    if (_disposed) return;
+    _suspended = false;
+    if (skipUpserts.isNotEmpty) {
+      _pending.removeWhere(
+        (path, kind) =>
+            kind == _PendingKind.upsert && skipUpserts.contains(path),
+      );
+    }
+    if (_pending.isNotEmpty) _scheduleFlush();
+  }
+
+  /// 丢弃某文件夹（及子目录）下所有待处理事件（移除该文件夹前调用）。
+  void discardPendingUnder(String folderPath) {
+    final root = p.normalize(folderPath);
+    _pending.removeWhere((path, _) {
+      if (path == root) return true;
+      return path.startsWith('$root/');
+    });
+  }
+
+  /// 立即落库所有待处理事件（测试用；内部定时 flush 也走 [_flushPending]）。
+  @visibleForTesting
+  Future<void> flushNow() async {
+    _flushTimer?.cancel();
+    _flushTimer = null;
+    await _flushPending();
+  }
+
+  Future<void> _flushPending() async {
+    if (_disposed || _suspended || _flushing) return;
+    _flushing = true;
+    try {
+      if (_pending.isEmpty) return;
+      final pending = Map<String, _PendingKind>.from(_pending);
+      _pending.clear();
+
+      final removes = <String>[];
+      final upserts = <String>[];
+      for (final entry in pending.entries) {
+        if (entry.value == _PendingKind.remove) {
+          removes.add(entry.key);
+        } else {
+          upserts.add(entry.key);
+        }
+      }
+
+      if (removes.isNotEmpty) {
+        await _songRepository.markMissingFiles(removes.toSet(), const {});
+      }
+      if (upserts.isNotEmpty) {
+        final (scanned, failures) = await _metadataService.parseAll(upserts);
+        if (failures.isNotEmpty) {
           AppLogger.warning(
             'FolderWatch',
-            'Failed to parse modified file: $filePath',
-            e,
-            s,
+            'Batch parse failed for ${failures.length} file(s)',
           );
-        });
+        }
+        if (scanned.isNotEmpty) {
+          await _songRepository.insertOrUpdateFromScan(scanned);
+        }
+      }
+
+      if (!_disposed && !_suspended) {
+        _controller.add(
+          FolderWatcherEvent(
+            addedOrUpdated: upserts.length,
+            removed: removes.length,
+          ),
+        );
+      }
+    } catch (e, s) {
+      AppLogger.error('FolderWatch', 'Failed to flush folder events', e, s);
+    } finally {
+      _flushing = false;
+      // 落库期间新到的（或本次未处理完的）事件重新排队。
+      if (_pending.isNotEmpty && !_suspended && !_disposed) _scheduleFlush();
+    }
   }
 }

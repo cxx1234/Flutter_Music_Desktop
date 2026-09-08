@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/database/database.dart';
+import '../../core/services/folder_watcher_service.dart';
 import '../../core/services/service_locator.dart';
 import '../../core/utils/grid_layout.dart';
 import '../../core/utils/memoized_filter.dart';
@@ -42,6 +43,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
   String _query = '';
   final _playlistFilterCache = QueryFilterCache<Playlist>();
   StreamSubscription<ShellAction>? _actionSub;
+  StreamSubscription<FolderWatcherEvent>? _folderWatcherSub;
 
   @override
   void initState() {
@@ -49,6 +51,16 @@ class _PlaylistPageState extends State<PlaylistPage> {
     _viewModel.addListener(_onChanged);
     _viewModel.load();
     _actionSub = widget.controller?.actions.listen(_onShellAction);
+    _attachFolderWatcher();
+  }
+
+  /// 订阅文件夹监听事件：外部文件增删后实时刷新列表与各播放列表计数（保活页
+  /// 平时靠 `active` 激活刷新，监听覆盖「停留在本页」的即时变更）。
+  void _attachFolderWatcher() {
+    if (!ServiceLocator.isReady) return;
+    _folderWatcherSub ??= ServiceLocator.folderWatcher.events.listen((_) {
+      if (mounted) _viewModel.load();
+    });
   }
 
   @override
@@ -61,6 +73,8 @@ class _PlaylistPageState extends State<PlaylistPage> {
 
   @override
   void dispose() {
+    _folderWatcherSub?.cancel();
+    _folderWatcherSub = null;
     _actionSub?.cancel();
     _viewModel.removeListener(_onChanged);
     _viewModel.dispose();
