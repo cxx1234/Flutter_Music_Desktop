@@ -477,23 +477,19 @@ class _PlaylistPageState extends State<PlaylistPage> {
     }
 
     final playlists = _filteredPlaylists;
-    // 搜索模式下收藏卡片隐藏，仅以播放列表是否匹配为准。
-    final hasAnything = _searchActive
-        ? playlists.isNotEmpty
-        : _viewModel.favoriteCount > 0 || playlists.isNotEmpty;
 
     return Column(
       children: [
         _buildAppBar(playlists.length),
         const Divider(height: 1),
         Expanded(
+          // “我的收藏”入口始终展示（即使无任何列表/收藏也是空态入口）；
+          // 仅搜索模式下隐藏收藏卡片，按匹配结果展示。
           child: _searchActive
               ? (playlists.isEmpty
                     ? SearchEmptyState(query: _query)
                     : _buildContent(theme, playlists))
-              : (hasAnything
-                    ? _buildContent(theme, playlists)
-                    : _buildEmptyState(theme)),
+              : _buildContent(theme, playlists),
         ),
       ],
     );
@@ -537,17 +533,21 @@ class _PlaylistPageState extends State<PlaylistPage> {
     );
   }
 
+  /// 没有自建播放列表时的空态提示（展示在“我的收藏”卡片下方）。
   Widget _buildEmptyState(ThemeData theme) {
-    return Center(
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.playlist_play, size: 64, color: theme.colorScheme.primary),
-          const SizedBox(height: 16),
-          Text('暂无播放列表', style: theme.textTheme.headlineSmall),
+          Icon(Icons.playlist_play, size: 56, color: theme.colorScheme.primary),
+          const SizedBox(height: 12),
+          Text('暂无播放列表', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
           Text(
             '点击右上角 + 新建播放列表',
+            textAlign: TextAlign.center,
             style: theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -576,6 +576,9 @@ class _PlaylistPageState extends State<PlaylistPage> {
                 : _buildFavoritesCard(theme),
           ),
         ),
+        // 没有自建播放列表时，在收藏卡片下方给出空态提示。
+        if (!_searchActive && playlists.isEmpty)
+          SliverToBoxAdapter(child: _buildEmptyState(theme)),
         if (playlists.isNotEmpty) ...[
           SliverToBoxAdapter(
             child: Padding(
